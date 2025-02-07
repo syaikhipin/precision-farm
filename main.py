@@ -201,9 +201,33 @@ def process_uploaded_file(uploaded_file):
         else:
             st.error("Please upload a CSV or Excel file")
             return None
-        return df.to_dict(orient='records')
+            
+        # Validate dataframe is not empty
+        if df.empty:
+            st.error("The uploaded file is empty")
+            return None
+            
+        # Check for required columns
+        required_columns = ['soil_type', 'crop_type', 'area']
+        missing_columns = [col for col in required_columns if col not in df.columns]
+        if missing_columns:
+            st.error(f"Missing required columns: {', '.join(missing_columns)}")
+            return None
+            
+        # Remove any rows with all NaN values
+        df = df.dropna(how='all')
+        
+        # Convert to records format
+        records = df.to_dict(orient='records')
+        return records
+    except pd.errors.EmptyDataError:
+        st.error("The uploaded file is empty")
+        return None
+    except pd.errors.ParserError:
+        st.error("Error parsing the file. Please check if the file format is correct")
+        return None
     except Exception as e:
-        st.error(f"Error processing file: {e}")
+        st.error(f"Error processing file: {str(e)}")
         return None
 
 def init_session_state():
@@ -243,7 +267,6 @@ def login_page():
 
 def land_management_page():
     st.title("Land Management")
-    create_footer()
     
     # Create a map for land visualization
     m = folium.Map(
@@ -281,34 +304,45 @@ def land_management_page():
     map_data = st_folium(m, width=800, height=400)
     
     # Land details form
+    name = st.text_input("Land Name", key="land_name")
+    soil_type = st.text_input("Soil Type", key="soil_type")
+    
     with st.form("land_details"):
-        name = st.text_input("Land Name")
-        soil_type = st.text_input("Soil Type")
         submit_button = st.form_submit_button("Save Land")
         
-        if submit_button and map_data is not None and 'all_drawings' in map_data and len(map_data['all_drawings']) > 0:
-            # Get the latest drawn polygon
-            polygon = map_data['all_drawings'][-1]
-            
-            # Create GeoJSON feature
-            geojson_data = geojson.Feature(
-                geometry=geojson.Polygon(polygon['geometry']['coordinates'])
-            )
-            
-            # Calculate area using shapely
-            poly = Polygon(polygon['geometry']['coordinates'][0])
-            area = poly.area
-            
-            # Save land data
-            save_land(
-                st.session_state.user.id,
-                name,
-                geojson_data,
-                soil_type,
-                area
-            )
-            st.success("Land saved successfully!")
-            st.rerun()
+        if submit_button:
+            if not name.strip():
+                st.error("Please enter a land name")
+            elif not soil_type.strip():
+                st.error("Please enter a soil type")
+            elif map_data is None or 'all_drawings' not in map_data or len(map_data['all_drawings']) == 0:
+                st.error("Please draw a land area on the map")
+            else:
+                # Get the latest drawn polygon
+                polygon = map_data['all_drawings'][-1]
+                
+                # Create GeoJSON feature
+                geojson_data = geojson.Feature(
+                    geometry=geojson.Polygon(polygon['geometry']['coordinates'])
+                )
+                
+                # Calculate area using shapely
+                poly = Polygon(polygon['geometry']['coordinates'][0])
+                area = poly.area
+                
+                try:
+                    # Save land data
+                    save_land(
+                        st.session_state.user.id,
+                        name.strip(),
+                        geojson_data,
+                        soil_type.strip(),
+                        area
+                    )
+                    st.success("Land saved successfully!")
+                    st.rerun()
+                except Exception as e:
+                    st.error(f"Error saving land: {str(e)}")
 
     # Display existing lands in a table with recommendations
     if user_lands:
@@ -490,14 +524,19 @@ def main():
     
     # Add file upload and text input section
     st.sidebar.header("User Data Input")
-    input_type = st.sidebar.radio("Select Input Type", ["None", "File Upload(CSV/XLS)", "Text Input"])
+    input_type = st.sidebar.radio("Select Input Type", ["None", "File Upload", "Text Input"])
     
     custom_data = None
     if input_type == "File Upload":
-        uploaded_file = st.sidebar.file_uploader("Upload your agricultural data (CSV/Excel)", type=['csv', 'xlsx', 'xls'])
+        st.sidebar.info("Please upload a CSV or Excel file with agricultural data")
+        uploaded_file = st.sidebar.file_uploader("Upload your data", type=['csv', 'xlsx', 'xls'])
         if uploaded_file:
-            custom_data = process_uploaded_file(uploaded_file)
-    elif input_type == "Manual Input":
+            with st.spinner('Processing your file...'):
+                custom_data = process_uploaded_file(uploaded_file)
+                if custom_data:
+                    st.sidebar.success('File processed successfully!')
+                    st.sidebar.write(f'Records loaded: {len(custom_data)}')
+    elif input_type == "Text Input":
         st.sidebar.subheader("Enter Custom Conditions")
         custom_soil_type = st.sidebar.text_input("Soil Type", "")
         custom_crop_history = st.sidebar.text_area("Previous Crop History", "")
